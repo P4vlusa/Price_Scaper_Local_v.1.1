@@ -1,52 +1,46 @@
-import os
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
-# --- ĐIỀN ID THƯ MỤC CỦA BẠN VÀO ĐÂY ---
-PARENT_FOLDER_ID = '1udCflvt7ujbLCDS2cU1YtNZ9K58i84q5'  # <--- NHỚ THAY ID VÀO ĐÂY
+# --- THAY ID FILE SHEET CỦA BẠN VÀO ĐÂY ---
+# (File này bạn phải tạo thủ công và Share cho Robot trước)
+SHEET_ID = '1WYj8fx8jLanw5gzb1-zxJSDyRB8aOMh8j6zEosfzJAw' 
+# ------------------------------------------
+
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
-def test_upload():
-    print("1. Đang kết nối Google Drive...")
+def test_ghi_sheet():
+    print("1. Đang kết nối Google Sheet...")
     try:
-        creds = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=['https://www.googleapis.com/auth/drive'])
-        service = build('drive', 'v3', credentials=creds)
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
+        client = gspread.authorize(creds)
+        
+        # Mở file Sheet theo ID
+        sh = client.open_by_key(SHEET_ID)
+        print(f"✅ Đã tìm thấy file: {sh.title}")
+        
     except Exception as e:
-        print(f"❌ Lỗi file key json: {e}")
+        print(f"❌ Lỗi kết nối: {e}")
+        print("👉 Gợi ý: Kiểm tra xem bạn đã Share quyền Editor cho Robot vào file Sheet này chưa?")
         return
 
-    print("2. Đang tạo file test...")
-    file_name = "test_ket_noi.csv" # Đổi đuôi thành csv giả lập
-    with open(file_name, "w") as f:
-        f.write("Cot A,Cot B\nDu lieu 1,Du lieu 2")
-
-    print("3. Đang upload lên Drive (Chuyển sang Google Sheet)...")
+    print("2. Đang tạo Tab (Sheet) mới...")
     try:
-        # --- QUAN TRỌNG: CẤU HÌNH ĐỂ LÁCH LUẬT DUNG LƯỢNG ---
-        file_metadata = {
-            'name': 'Test_Ket_Noi_Sheet',  # Tên file trên Drive
-            'parents': [PARENT_FOLDER_ID],
-            # Dòng này ép Google chuyển file CSV thành Google Sheet (Không tốn dung lượng)
-            'mimeType': 'application/vnd.google-apps.spreadsheet' 
-        }
+        # Tạo tên Tab là ngày giờ hiện tại
+        tab_name = datetime.now().strftime("%Y-%m-%d_%H-%M")
         
-        # File gốc ở máy vẫn là CSV/Text
-        media = MediaFileUpload(file_name, mimetype='text/csv')
+        # Tạo worksheet mới
+        worksheet = sh.add_worksheet(title=tab_name, rows=100, cols=10)
         
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
+        # Ghi dữ liệu test
+        worksheet.update('A1', [['Test Robot', 'Giá', 'Link'], ['Iphone 15', '30tr', 'Link Test']])
         
-        print(f"✅ THÀNH CÔNG! File ID: {file.get('id')}")
-        print("👉 Vào Drive xem có file 'Test_Ket_Noi_Sheet' (màu xanh lá) chưa.")
+        print(f"🎉 THÀNH CÔNG! Đã ghi dữ liệu vào Tab: {tab_name}")
+        print("👉 Hãy mở file Google Sheet của bạn ra kiểm tra ngay!")
         
     except Exception as e:
-        print(f"❌ VẪN LỖI: {e}")
-        print("👉 Kiểm tra: Bạn đã Share quyền EDITOR (Người chỉnh sửa) cho email Robot chưa?")
+        print(f"❌ Lỗi ghi dữ liệu: {e}")
 
 if __name__ == "__main__":
-    test_upload()
+    test_ghi_sheet()
