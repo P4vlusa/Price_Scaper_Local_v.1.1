@@ -1,31 +1,25 @@
-name: Run Price Tracker Local
+name: Run Laptop Price Tracker Local
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 jobs:
   scrape_job:
-    runs-on: self-hosted  # Chạy trên máy của bạn
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # ĐÃ BỎ BƯỚC SETUP PYTHON Ở ĐÂY
-
       - name: Install Libraries
-        # Dùng 'python -m pip' để đảm bảo nó cài vào đúng bản Python trên máy
         run: |
           python -m pip install --upgrade pip
           python -m pip install selenium webdriver-manager gspread oauth2client google-auth undetected-chromedriver
 
-      - name: Create Service Account File
-        # Trên Windows (PowerShell), lệnh echo hơi khác.
-        # Ta dùng cú pháp chuẩn của PowerShell để ghi file:
-        shell: powershell
-        run: |
-          $content = '${{ secrets.GDRIVE_CREDS }}'
-          Set-Content -Path service_account.json -Value $content -Encoding UTF8
+      # --- ĐÃ XÓA BƯỚC "Create Service Account File" ---
+      # Lý do: Vì ta đã copy file thủ công vào máy rồi.
+      # Đừng để code tự tạo nữa kẻo nó ghi đè file rỗng.
+      # -------------------------------------------------
 
       - name: Run Main Script
         run: python main_local.py
