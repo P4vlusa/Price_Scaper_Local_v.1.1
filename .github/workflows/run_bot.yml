@@ -1,35 +1,27 @@
-name: Self-Hosted Price Tracker
+name: Run Price Tracker (Local File)
 
 on:
   schedule:
-    - cron: '0 4 * * *' # 10h sáng mỗi ngày
-  workflow_dispatch:    # Nút bấm chạy tay
+    - cron: '0 4 * * *'
+  workflow_dispatch:
 
 jobs:
   scrape_job:
-    runs-on: self-hosted # Chạy trên máy của bạn
+    runs-on: self-hosted
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        # Bước này sẽ tải toàn bộ code + thư mục configs về máy bạn
 
-      - name: Install Python & Libraries
+      - name: Install Libraries
         run: |
-          # Cài thư viện (Nếu máy bạn chưa có thì nó sẽ cài)
           python -m pip install --upgrade pip
           python -m pip install selenium webdriver-manager gspread oauth2client
 
-      - name: Create Service Account File (PowerShell Safe)
-        shell: powershell
-        run: |
-          # Lấy nội dung từ Secret và ghi ra file service_account.json
-          # Dùng cách này để tránh lỗi ký tự lạ trên Windows
-          $content = '${{ secrets.GDRIVE_CREDS }}'
-          if (-not $content) { Write-Error "SECRET IS EMPTY!" }
-          [System.IO.File]::WriteAllText("service_account.json", $content, [System.Text.Encoding]::UTF8)
-          Write-Host "✅ File service_account.json created successfully."
+      # --- ĐÃ XÓA BƯỚC "Create Service Account File" ---
+      # Lý do: Python sẽ tự đọc file C:\AutoPrice\service_account.json
+      # Không cần GitHub tạo file nữa -> Hết lỗi file rỗng.
+      # -------------------------------------------------
 
       - name: Run Main Script
-        # Chạy file main_local.py
         run: python main_local.py
