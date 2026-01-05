@@ -18,35 +18,47 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ==============================================================================
-# CẤU HÌNH
+# 1. CẤU HÌNH HỆ THỐNG
 # ==============================================================================
 
-# Fix lỗi font tiếng Việt trên Windows Console
+# Fix lỗi hiển thị tiếng Việt trên Windows Console (Bắt buộc)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# --- THAY ID SHEET CỦA BẠN ---
+# --- THAY ID GOOGLE SHEET CỦA BẠN VÀO ĐÂY ---
 SPREADSHEET_ID = '1YqO4MVEzAz61jc_WCVSS00LpRlrDb5r0LnuzNi6BYUY'
 MASTER_SHEET_NAME = 'Sheet2'
 
-# Số luồng chạy song song (Máy PC để 3-5 là đẹp)
+# Số lượng luồng chạy song song (Máy PC để 3-5 là ổn định)
 MAX_WORKERS = 4
 
-# --- ĐƯỜNG DẪN TỰ ĐỘNG (THEO GITHUB ACTIONS) ---
-# Lấy đường dẫn nơi file này đang nằm
+# --- CẤU HÌNH ĐƯỜNG DẪN HYBRID ---
+
+# 1. Đường dẫn Key Cố Định (Lấy từ ổ C cho an toàn, không lo lỗi GitHub)
+FIXED_KEY_PATH = r'C:\Users\Pavlusa\OneDrive\Work\Python\Google_Token\service_account.json'
+
+# 2. Đường dẫn Config (Lấy từ thư mục code do GitHub tải về)
+# Lý do: Để bạn có thể cập nhật/thêm bớt link sản phẩm từ xa thông qua GitHub
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# File config sẽ nằm trong thư mục con 'configs'
 FOLDER_CONFIG = os.path.join(BASE_DIR, 'configs')
-# File key sẽ được tạo ra tại chỗ này
-SERVICE_ACCOUNT_FILE = os.path.join(BASE_DIR, 'service_account.json')
+
+# Logic chọn file Key:
+if os.path.exists(FIXED_KEY_PATH):
+    SERVICE_ACCOUNT_FILE = FIXED_KEY_PATH
+    print(f"🔑 Đang sử dụng Key Local tại: {SERVICE_ACCOUNT_FILE}")
+else:
+    # Dự phòng: Nếu không thấy ở ổ C thì tìm trong thư mục code
+    SERVICE_ACCOUNT_FILE = os.path.join(BASE_DIR, 'service_account.json')
+    print(f"⚠️ Không thấy Key ổ C, đang tìm tại: {SERVICE_ACCOUNT_FILE}")
 
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 # ==============================================================================
-# HÀM XỬ LÝ
+# 2. CÁC HÀM XỬ LÝ
 # ==============================================================================
 
 def kill_old_drivers():
-    """Dọn dẹp Chromedriver rác"""
+    """Dọn dẹp Chromedriver cũ bị treo để giải phóng RAM"""
+    print("🧹 Đang dọn dẹp driver rác...")
     try:
         if os.name == 'nt':
             subprocess.call("taskkill /F /IM chromedriver.exe /T", shell=True, stderr=subprocess.DEVNULL)
@@ -54,26 +66,27 @@ def kill_old_drivers():
 
 def get_google_sheet_client():
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        print(f"❌ Lỗi: Không tìm thấy file '{SERVICE_ACCOUNT_FILE}'")
-        print("👉 Kiểm tra lại bước tạo file Secret trong YAML!")
+        print(f"❌ Lỗi: Không tìm thấy file Key tại {SERVICE_ACCOUNT_FILE}")
+        print(f"👉 Hãy tạo thư mục C:\\AutoPrice và copy file service_account.json vào đó!")
         return None
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
         return gspread.authorize(creds)
     except Exception as e:
-        print(f"❌ Lỗi kết nối Sheet: {e}")
+        print(f"❌ Lỗi kết nối Google Sheet: {e}")
         return None
 
 def get_driver():
+    """Cấu hình Selenium tối ưu cho chạy ẩn"""
     opts = Options()
-    opts.add_argument("--headless=new") # Chạy ẩn
+    opts.add_argument("--headless=new") # Chạy ẩn giao diện
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--log-level=3")
     
-    # Chặn ảnh để load nhanh
+    # Tắt load ảnh để chạy nhanh hơn
     prefs = {"profile.managed_default_content_settings.images": 2}
     opts.add_experimental_option("prefs", prefs)
 
@@ -84,9 +97,9 @@ def get_driver():
         return webdriver.Chrome(options=opts)
 
 def scrape_dealer(config_path):
-    """Xử lý 1 đại lý"""
+    """Hàm xử lý trọn gói cho 1 đại lý"""
     dealer_name = os.path.basename(config_path).replace('.json', '').upper()
-    print(f"🔵 [{dealer_name}] Bắt đầu chạy...")
+    print(f"🔵 [{dealer_name}] Đang khởi động...")
 
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -104,20 +117,21 @@ def scrape_dealer(config_path):
         for i, product in enumerate(products):
             current_time = datetime.now()
             
-            # Cấu trúc 7 cột: Ngày | Giờ | Đại lý | SP | Giá | Trạng thái | Link
+            # Cấu trúc dòng dữ liệu (7 cột)
+            # Ngày | Giờ | Đại lý | Sản phẩm | Giá | Trạng thái | Link
             row = [
-                current_time.strftime("%d/%m/%Y"),
-                current_time.strftime("%H:%M:%S"),
-                dealer_name,
-                product.get('name', 'Unknown'),
-                "0",
-                "Fail",
-                product.get('url', '')
+                current_time.strftime("%d/%m/%Y"), 
+                current_time.strftime("%H:%M:%S"), 
+                dealer_name,                       
+                product.get('name', 'Unknown'),    
+                "0",                               
+                "Fail",                            
+                product.get('url', '')             
             ]
 
             try:
                 driver.get(product['url'])
-                # time.sleep(1) # Bật nếu mạng quá nhanh làm web chặn
+                # time.sleep(1) # Bật lên nếu mạng quá nhanh làm web chặn
 
                 selector = product.get('selector')
                 sel_type = product.get('type', 'css')
@@ -131,16 +145,17 @@ def scrape_dealer(config_path):
                 if element:
                     clean_price = ''.join(filter(str.isdigit, element.text))
                     if clean_price:
-                        row[4] = clean_price
-                        row[5] = "OK"
-            except:
-                pass 
+                        row[4] = clean_price # Cập nhật giá
+                        row[5] = "OK"        # Cập nhật trạng thái
+            
+            except Exception:
+                pass # Lỗi thì bỏ qua, mặc định là Fail
 
             results.append(row)
-            
-            # Log nhẹ để biết đang chạy
+
+            # Log tiến độ (cứ 20 sản phẩm in 1 lần)
             if i % 20 == 0:
-                print(f"   [{dealer_name}] {i}/{len(products)}...")
+                 print(f"   [{dealer_name}] {i}/{len(products)}...")
 
     except Exception as e:
         print(f"❌ Lỗi Driver [{dealer_name}]: {e}")
@@ -149,62 +164,12 @@ def scrape_dealer(config_path):
             try: driver.quit()
             except: pass
             
-    print(f"✅ [{dealer_name}] Xong {len(results)} dòng.")
+    print(f"✅ [{dealer_name}] Hoàn tất. Thu được {len(results)} dòng.")
     return results
 
 def save_to_sheet_safe(data_rows):
-    """Ghi Sheet an toàn (Thread-safe)"""
+    """Ghi vào Sheet an toàn (Thread-safe) với cơ chế Retry"""
     if not data_rows: return
 
-    # Kết nối lại client để tránh timeout
-    client = get_google_sheet_client()
-    if not client: return
-
-    for attempt in range(5):
-        try:
-            sh = client.open_by_key(SPREADSHEET_ID)
-            
-            try:
-                ws = sh.worksheet(MASTER_SHEET_NAME)
-            except:
-                ws = sh.add_worksheet(title=MASTER_SHEET_NAME, rows=5000, cols=10)
-                ws.append_row(["Ngày", "Thời gian", "Đại lý", "Sản phẩm", "Giá", "Trạng thái", "Link"])
-            
-            # Ngủ random để tránh đụng hàng khi ghi
-            time.sleep(random.uniform(1, 5))
-            
-            ws.append_rows(data_rows)
-            print(f"💾 ĐÃ LƯU {len(data_rows)} DÒNG CỦA ĐẠI LÝ LÊN SHEET!")
-            return
-
-        except Exception as e:
-            wait = random.uniform(5, 10)
-            print(f"⚠️ Sheet bận, chờ {wait:.1f}s... (Lỗi: {e})")
-            time.sleep(wait)
-
-def main():
-    kill_old_drivers()
-    print(f"📂 Thư mục chạy: {BASE_DIR}")
-    print(f"📂 Thư mục config: {FOLDER_CONFIG}")
-
-    if not os.path.exists(FOLDER_CONFIG):
-        print("❌ Không thấy thư mục 'configs'. Bạn đã push lên GitHub chưa?")
-        return
-
-    config_files = glob.glob(os.path.join(FOLDER_CONFIG, "*.json"))
-    print(f"🚀 Tìm thấy {len(config_files)} đại lý. Chạy {MAX_WORKERS} luồng...")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_file = {executor.submit(scrape_dealer, f): f for f in config_files}
-        
-        for future in concurrent.futures.as_completed(future_to_file):
-            try:
-                data = future.result()
-                save_to_sheet_safe(data)
-            except Exception as exc:
-                print(f"❌ Lỗi luồng: {exc}")
-
-    print("\n🎉🎉🎉 HOÀN TẤT TOÀN BỘ!")
-
-if __name__ == "__main__":
-    main()
+    # Kết nối lại client mỗi lần ghi để tránh timeout session
+    client =
