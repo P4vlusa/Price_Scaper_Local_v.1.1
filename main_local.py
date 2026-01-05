@@ -7,13 +7,9 @@ import random
 import glob
 import subprocess
 import concurrent.futures
-from datetime import datetime
-
-# --- CÀI ĐẶT THƯ VIỆN ---
-# pip install selenium webdriver-manager gspread oauth2client
-
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -22,26 +18,35 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ==============================================================================
-# 1. CẤU HÌNH HỆ THỐNG
+# CẤU HÌNH
 # ==============================================================================
 
+# Fix lỗi font tiếng Việt trên Windows Console
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# --- THAY ID SHEET CỦA BẠN VÀO ĐÂY ---
-MASTER_SHEET_ID = 'THAY_ID_SHEET_CUA_BAN_VAO_DAY' 
+# --- THAY ID SHEET CỦA BẠN ---
+SPREADSHEET_ID = '1YqO4MVEzAz61jc_WCVSS00LpRlrDb5r0LnuzNi6BYUY'
+MASTER_SHEET_NAME = 'Local'
 
-MAX_WORKERS = 3
+# Số luồng chạy song song (Máy PC để 3-5 là đẹp)
+MAX_WORKERS = 4
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVICE_ACCOUNT_FILE = r'C:\Users\Pavlusa\OneDrive\Work\Python\Google_Token\service_account.json'
-FOLDER_CONFIG = os.path.join(CURRENT_DIR, 'configs')
+# --- ĐƯỜNG DẪN TỰ ĐỘNG (THEO GITHUB ACTIONS) ---
+# Lấy đường dẫn nơi file này đang nằm
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# File config sẽ nằm trong thư mục con 'configs'
+FOLDER_CONFIG = os.path.join(BASE_DIR, 'configs')
+# File key sẽ được tạo ra tại chỗ này
+SERVICE_ACCOUNT_FILE = os.path.join(BASE_DIR, 'service_account.json')
+
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 # ==============================================================================
-# 2. CÁC HÀM XỬ LÝ
+# HÀM XỬ LÝ
 # ==============================================================================
 
 def kill_old_drivers():
-    """Chỉ tắt chromedriver cũ, KHÔNG tắt Chrome người dùng"""
+    """Dọn dẹp Chromedriver rác"""
     try:
         if os.name == 'nt':
             subprocess.call("taskkill /F /IM chromedriver.exe /T", shell=True, stderr=subprocess.DEVNULL)
@@ -49,101 +54,75 @@ def kill_old_drivers():
 
 def get_google_sheet_client():
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        print(f"❌ Lỗi: Không thấy file Key tại {SERVICE_ACCOUNT_FILE}")
-        print(f"👉 Hãy tạo thư mục C:\\AutoPrice và copy file key vào đó!")
+        print(f"❌ Lỗi: Không tìm thấy file '{SERVICE_ACCOUNT_FILE}'")
+        print("👉 Kiểm tra lại bước tạo file Secret trong YAML!")
         return None
     try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
         return gspread.authorize(creds)
     except Exception as e:
-        print(f"❌ Lỗi Sheet: {e}")
+        print(f"❌ Lỗi kết nối Sheet: {e}")
         return None
-
-def upload_to_sheet(client, dealer_name, data_rows):
-    if not client or not data_rows: return
-    try:
-        sh = client.open_by_key(MASTER_SHEET_ID)
-        # Tên tab: TGDD, FPT...
-        tab_name = dealer_name.strip().replace(" ", "_").upper()
-        
-        try:
-            worksheet = sh.worksheet(tab_name)
-        except:
-            print(f"   ✨ Tạo Tab mới '{tab_name}'...")
-            worksheet = sh.add_worksheet(title=tab_name, rows=2000, cols=10)
-            worksheet.append_row(["Date", "Time", "Dealer", "Product", "Price", "Status", "URL"])
-
-        current_date_str = datetime.now().strftime("%d/%m/%Y")
-        rows_to_append = []
-        for item in data_rows:
-            rows_to_append.append([
-                current_date_str, item['Time'], dealer_name,
-                item['Product'], item['Price'], item['Status'], item['URL']
-            ])
-            
-        if rows_to_append:
-            worksheet.append_rows(rows_to_append)
-            print(f"   ✅ Đã lưu {len(rows_to_append)} dòng.")
-    except Exception as e:
-        print(f"   ❌ Lỗi Upload: {e}")
 
 def get_driver():
     opts = Options()
-    # Headless new: Chạy ẩn, không chiếm chuột
-    opts.add_argument("--headless=new") 
+    opts.add_argument("--headless=new") # Chạy ẩn
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--log-level=3")
     
-    # Chặn load ảnh để chạy nhanh
+    # Chặn ảnh để load nhanh
     prefs = {"profile.managed_default_content_settings.images": 2}
     opts.add_experimental_option("prefs", prefs)
 
     try:
-        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+        service = Service(ChromeDriverManager().install())
+        return webdriver.Chrome(service=service, options=opts)
     except:
         return webdriver.Chrome(options=opts)
 
-def process_dealer_smart(config_file, gs_client):
-    """Phiên bản Thông Minh: Mở 1 lần - Quét tất cả"""
-    dealer_name = os.path.basename(config_file).replace('.json', '')
-    print(f"\n🔵 XỬ LÝ: {dealer_name.upper()}")
+def scrape_dealer(config_path):
+    """Xử lý 1 đại lý"""
+    dealer_name = os.path.basename(config_path).replace('.json', '').upper()
+    print(f"🔵 [{dealer_name}] Bắt đầu chạy...")
 
     try:
-        with open(config_file, 'r', encoding='utf-8') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             products = json.load(f)
-    except: return
+    except Exception as e:
+        print(f"❌ Lỗi đọc file {dealer_name}: {e}")
+        return []
 
-    results = []
     driver = None
+    results = []
 
     try:
-        # Mở trình duyệt 1 lần duy nhất ở đây
-        print("   🚀 Đang khởi động Chrome (Chỉ 1 lần)...")
         driver = get_driver()
         
-        total = len(products)
         for i, product in enumerate(products):
-            try:
-                # Quét từng sản phẩm
-                driver.get(product['url'])
-                time.sleep(2) # Nghỉ ngắn
+            current_time = datetime.now()
+            
+            # Cấu trúc 7 cột: Ngày | Giờ | Đại lý | SP | Giá | Trạng thái | Link
+            row = [
+                current_time.strftime("%d/%m/%Y"),
+                current_time.strftime("%H:%M:%S"),
+                dealer_name,
+                product.get('name', 'Unknown'),
+                "0",
+                "Fail",
+                product.get('url', '')
+            ]
 
-                result = {
-                    "Time": datetime.now().strftime("%H:%M:%S"),
-                    "Product": product.get('name', 'Unknown'),
-                    "Price": "0",
-                    "Status": "Fail",
-                    "URL": product['url']
-                }
+            try:
+                driver.get(product['url'])
+                # time.sleep(1) # Bật nếu mạng quá nhanh làm web chặn
 
                 selector = product.get('selector')
                 sel_type = product.get('type', 'css')
+                
                 element = None
-
                 if sel_type == 'xpath':
                     element = driver.find_element(By.XPATH, selector)
                 else:
@@ -152,51 +131,80 @@ def process_dealer_smart(config_file, gs_client):
                 if element:
                     clean_price = ''.join(filter(str.isdigit, element.text))
                     if clean_price:
-                        result['Price'] = clean_price
-                        result['Status'] = 'OK'
-                
-                results.append(result)
-                print(f"   [{i+1}/{total}] {result['Status']} - {result['Price']}")
+                        row[4] = clean_price
+                        row[5] = "OK"
+            except:
+                pass 
 
-            except Exception:
-                # Nếu lỗi 1 link thì bỏ qua, chạy link tiếp theo
-                print(f"   [{i+1}/{total}] Lỗi/Không tìm thấy giá.")
-                results.append({"Time": datetime.now().strftime("%H:%M:%S"), "Product": product['name'], "Price": "0", "Status": "Error", "URL": product['url']})
+            results.append(row)
+            
+            # Log nhẹ để biết đang chạy
+            if i % 20 == 0:
+                print(f"   [{dealer_name}] {i}/{len(products)}...")
 
     except Exception as e:
-        print(f"❌ Lỗi trình duyệt: {e}")
+        print(f"❌ Lỗi Driver [{dealer_name}]: {e}")
     finally:
-        # Quét xong hết mới tắt
         if driver: 
-            driver.quit()
-            print("   💤 Đã đóng Chrome.")
+            try: driver.quit()
+            except: pass
+            
+    print(f"✅ [{dealer_name}] Xong {len(results)} dòng.")
+    return results
 
-    print("   -> Upload dữ liệu...")
-    upload_to_sheet(gs_client, dealer_name, results)
+def save_to_sheet_safe(data_rows):
+    """Ghi Sheet an toàn (Thread-safe)"""
+    if not data_rows: return
+
+    # Kết nối lại client để tránh timeout
+    client = get_google_sheet_client()
+    if not client: return
+
+    for attempt in range(5):
+        try:
+            sh = client.open_by_key(SPREADSHEET_ID)
+            
+            try:
+                ws = sh.worksheet(MASTER_SHEET_NAME)
+            except:
+                ws = sh.add_worksheet(title=MASTER_SHEET_NAME, rows=5000, cols=10)
+                ws.append_row(["Ngày", "Thời gian", "Đại lý", "Sản phẩm", "Giá", "Trạng thái", "Link"])
+            
+            # Ngủ random để tránh đụng hàng khi ghi
+            time.sleep(random.uniform(1, 5))
+            
+            ws.append_rows(data_rows)
+            print(f"💾 ĐÃ LƯU {len(data_rows)} DÒNG CỦA ĐẠI LÝ LÊN SHEET!")
+            return
+
+        except Exception as e:
+            wait = random.uniform(5, 10)
+            print(f"⚠️ Sheet bận, chờ {wait:.1f}s... (Lỗi: {e})")
+            time.sleep(wait)
 
 def main():
-    # Gọi đúng tên hàm mới
     kill_old_drivers()
-    
-    print(f"📂 Config tại: {FOLDER_CONFIG}")
-    
-    gs_client = get_google_sheet_client()
-    if not gs_client: return
+    print(f"📂 Thư mục chạy: {BASE_DIR}")
+    print(f"📂 Thư mục config: {FOLDER_CONFIG}")
 
     if not os.path.exists(FOLDER_CONFIG):
-        os.makedirs(FOLDER_CONFIG)
-        sample = [{"name":"iPhone 15","url":"https://www.thegioididong.com/dtdd/iphone-15","selector":".box-price-present","type":"css"}]
-        with open(os.path.join(FOLDER_CONFIG, 'tgdd.json'), 'w', encoding='utf-8') as f:
-            json.dump(sample, f, indent=2)
+        print("❌ Không thấy thư mục 'configs'. Bạn đã push lên GitHub chưa?")
+        return
 
     config_files = glob.glob(os.path.join(FOLDER_CONFIG, "*.json"))
-    print(f"🚀 TÌM THẤY {len(config_files)} ĐẠI LÝ.")
-    
-    for config_file in config_files:
-        process_dealer_smart(config_file, gs_client)
-        print("-" * 40)
+    print(f"🚀 Tìm thấy {len(config_files)} đại lý. Chạy {MAX_WORKERS} luồng...")
 
-    print("\n🎉 HOÀN TẤT!")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_file = {executor.submit(scrape_dealer, f): f for f in config_files}
+        
+        for future in concurrent.futures.as_completed(future_to_file):
+            try:
+                data = future.result()
+                save_to_sheet_safe(data)
+            except Exception as exc:
+                print(f"❌ Lỗi luồng: {exc}")
+
+    print("\n🎉🎉🎉 HOÀN TẤT TOÀN BỘ!")
 
 if __name__ == "__main__":
     main()
